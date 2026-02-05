@@ -1,6 +1,7 @@
 package com.example.anonymouschat.domain.usecase.connection
 
 import com.example.anonymouschat.domain.repository.ChatRepository
+import com.example.anonymouschat.domain.usecase.base.UseCase
 import com.example.anonymouschat.domain.usecase.base.UseCaseNoParams
 import com.example.anonymouschat.util.Result
 import javax.inject.Inject
@@ -9,9 +10,11 @@ import javax.inject.Inject
 
 class ConnectWebSocketUseCase @Inject constructor(
     val chatRepository: ChatRepository
-): UseCaseNoParams<Unit>(){
-    override suspend fun execute(): Result<Unit> {
-        return chatRepository.connect()
+): UseCase<ConnectWebSocketUseCase.Params, Unit>(){
+    override suspend fun execute(params: Params): Result<Unit> {
+        return chatRepository.connect(params.userId)
     }
+
+    data class Params(val userId: String)
 
 }

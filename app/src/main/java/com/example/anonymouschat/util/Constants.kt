@@ -5,6 +5,8 @@ package com.example.anonymouschat.util
 object Constants{
     // base url for the chat server
     const val WEBSOCKET_URL = "ws://10.0.2.2:8080/ws"
+    // api base url
+    const val API_BASE_URL = "http://10.0.2.2:8080/api/users"
     // connection timeout
     const val CONNECTION_TIMEOUT_MS = 10_000L
     // reconnect time
@@ -24,6 +26,10 @@ object Constants{
     const val SUBSCRIBE_USER_INFO = "/user/queue/info"
     const val SUBSCRIBE_TYPING = "/user/queue/typing"
     const val SUBSCRIBE_RECEIPTS = "/user/queue/receipts"
+
+    // Add new destination
+    const val USER_CONNECT_DESTINATION = "/app/user.connect"
+    const val SUBSCRIBE_CONNECTION = "/user/queue/connection"
 
     // chat message configuration
     const val DEFAULT_MESSAGE_EXPIRY_SECONDS = 60

@@ -6,10 +6,10 @@ import com.example.anonymouschat.domain.usecase.base.UseCaseNoParams
 import com.example.anonymouschat.util.Result
 import javax.inject.Inject
 
-class RequestUserIdentityFromServer @Inject constructor(
+class RegisterUserUseCase @Inject constructor(
     private val userRepository: UserRepository
-):UseCaseNoParams<User>(){
+): UseCaseNoParams<User>() {
     override suspend fun execute(): Result<User> {
-       return userRepository.registerUser()
+        return userRepository.registerUser()
     }
 }

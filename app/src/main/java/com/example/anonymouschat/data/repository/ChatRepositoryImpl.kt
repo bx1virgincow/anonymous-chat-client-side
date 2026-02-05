@@ -1,5 +1,6 @@
 package com.example.anonymouschat.data.repository
 
+import android.util.Log
 import com.example.anonymouschat.data.mapper.toDomainModel
 import com.example.anonymouschat.data.remote.dto.ChatNotificationDTO
 import com.example.anonymouschat.data.remote.dto.ChatRequestDTO
@@ -25,14 +26,48 @@ class ChatRepositoryImpl @Inject constructor(
     private val messageHandler: StompMessageHandler
 ) : ChatRepository {
 
+    private val TAG = "ChatRepository"
+
     /** in-memory cache of active chats */
     private val _activeChats = MutableStateFlow<List<Chat>>(emptyList())
 
-    override suspend fun connect(): Result<Unit> {
+    override suspend fun connect(userId: String?): Result<Unit> {
         return try {
-            webSocketClient.connect()
+            Log.d(TAG, "Connecting with userId: $userId")
+
+            // Step 1: Connect WebSocket with userId in HTTP header
+            webSocketClient.connect(userId)
+
+            // Step 2: Wait for STOMP connection
+            var attempts = 0
+            while (!webSocketClient.isConnected() && attempts < 30) {
+                kotlinx.coroutines.delay(100)
+                attempts++
+            }
+
+            if (!webSocketClient.isConnected()) {
+                return Result.Error(Exception("WebSocket connection timeout"))
+            }
+
+            Log.d(TAG, "WebSocket connected, now authenticating user...")
+
+            // Step 3: Authenticate user (send /app/user.connect)
+            // This is a fallback in case the HTTP header approach didn't work
+            if (userId != null) {
+                val authResult = webSocketClient.authenticateUser(userId)
+
+                if (authResult.isFailure) {
+                    Log.w(TAG, "User authentication via /app/user.connect failed: ${authResult.exceptionOrNull()?.message}")
+                    // Don't fail here - the HTTP header approach might have worked
+                } else {
+                    Log.d(TAG, "User authenticated successfully via /app/user.connect")
+                }
+            }
+
+            Log.d(TAG, "Connected successfully")
             Result.Success(Unit)
         } catch (e: Exception) {
+            Log.e(TAG, "Connection failed", e)
             Result.Error(e)
         }
     }
@@ -139,6 +174,4 @@ class ChatRepositoryImpl @Inject constructor(
             Result.Error(e)
         }
     }
-
-
 }

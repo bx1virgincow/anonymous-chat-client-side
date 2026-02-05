@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.Flow
 interface ChatRepository{
 
     /** connect to websocket */
-    suspend fun connect(): Result<Unit>
+    suspend fun connect(userId: String? = null): Result<Unit>
 
     /** disconnect from websocket server */
     suspend fun disconnect(): Result<Unit>

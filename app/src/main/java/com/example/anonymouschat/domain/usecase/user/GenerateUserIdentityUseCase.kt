@@ -18,17 +18,15 @@ class GenerateUserIdentityUseCase @Inject constructor(
 ) : UseCaseNoParams<User>(){
     override suspend fun execute(): Result<User> {
         // step 1: Generate new identity
-        val generateResult = userRepository.requestUserIdentityFromServer()
+        val generateResult = userRepository.registerUser()
 
         // step 2: if generation succeed, save it
         if(generateResult is Result.Success){
             val user = generateResult.data
 
             // save to local storage
-            val saveResults = userRepository.saveUserIdentity(user)
-
             // step 3: return appropriate result
-            return when(saveResults){
+            return when(val saveResults = userRepository.saveUserIdentity(user)){
                 is Result.Success -> Result.Success(user)
                 is Result.Error -> Result.Error(saveResults.exception)
             }

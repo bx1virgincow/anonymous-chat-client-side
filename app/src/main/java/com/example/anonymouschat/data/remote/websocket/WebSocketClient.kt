@@ -10,7 +10,9 @@ interface WebSocketClient{
     val connectionState: StateFlow<WebSocketState>
 
     // connect websocket
-    suspend fun connect()
+    suspend fun connect(userId: String?)
+
+    suspend fun authenticateUser(userId: String): Result<Boolean>
 
     // disconnect
     suspend fun disconnect()

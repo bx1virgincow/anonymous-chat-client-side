@@ -3,73 +3,59 @@ package com.example.anonymouschat.data.repository
 import android.util.Log
 import com.example.anonymouschat.data.local.datastore.UserPreferences
 import com.example.anonymouschat.data.mapper.toDomainModel
-import com.example.anonymouschat.data.remote.dto.UserIdentityDTO
-import com.example.anonymouschat.data.remote.websocket.StompMessageHandler
-import com.example.anonymouschat.data.remote.websocket.WebSocketClient
+import com.example.anonymouschat.data.remote.api.UserApiService
 import com.example.anonymouschat.domain.model.User
 import com.example.anonymouschat.domain.repository.UserRepository
-import com.example.anonymouschat.util.Constants
 import com.example.anonymouschat.util.Result
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 
 class UserRepositoryImpl @Inject constructor(
     private val userPreferences: UserPreferences,
-    private val webSocketClient: WebSocketClient,
-    private val messageHandler: StompMessageHandler
+    private val userApiService: UserApiService
 ) : UserRepository {
 
-    override suspend fun requestUserIdentityFromServer(): Result<User> {
+    override suspend fun registerUser(): Result<User> {
         return try {
-            Log.d("UserRepository", "Requesting user identity from server...")
+            Log.d("UserRepository", "Registering new user via REST API...")
 
-            // Wait for connection
-            val connectResult = connectAndWait()
-            if (connectResult is Result.Error) {
-                Log.e("UserRepository", "Connection failed: ${connectResult.exception.message}")
-                return connectResult
+            val result = userApiService.registerUser()
+
+
+
+            if (result is Result.Success) {
+                val userDTO = result.data
+                val user = userDTO.toDomainModel()
+
+                // Save locally
+                userPreferences.saveUser(user)
+
+                Log.d("UserRepository", "User registered: ${user.fullShareable}")
+                Result.Success(user)
+            } else if (result is Result.Error){
+                Result.Error(result.exception)
+            }else{
+                Result.Error(Exception("Failed to register"))
             }
-
-            Log.d("UserRepository", "WebSocket connected, subscribing to ${Constants.SUBSCRIBE_USER_INFO}")
-
-            // Subscribe FIRST
-            val responseFlow = webSocketClient.subscribe(Constants.SUBSCRIBE_USER_INFO)
-
-            Log.d("UserRepository", "Sending request to ${Constants.GET_USER_INFO_DESTINATION}")
-
-            // Send request
-            webSocketClient.send(Constants.GET_USER_INFO_DESTINATION, "{}")
-
-            Log.d("UserRepository", "Waiting for server response...")
-
-            // Wait for response with timeout
-            val response = withTimeout(10_000) {
-                responseFlow.first()
-            }
-
-            Log.d("UserRepository", "Received response: $response")
-
-            // Parse response
-            val userDTO = messageHandler.parse<UserIdentityDTO>(response)
-            if (userDTO == null) {
-                Log.e("UserRepository", "Failed to parse user DTO from response")
-                return Result.Error(Exception("Failed to parse user info"))
-            }
-
-            Log.d("UserRepository", "Parsed user: ${userDTO.displayName}")
-
-            // Convert to domain model and save locally
-            val user = userDTO.toDomainModel()
-            userPreferences.saveUser(user)
-
-            Log.d("UserRepository", "User saved locally: ${user.fullShareable}")
-
-            Result.Success(user)
         } catch (e: Exception) {
-            Log.e("UserRepository", "Failed to get user from server", e)
+            Log.e("UserRepository", "Registration error", e)
+            Result.Error(e)
+        }
+    }
+
+    override suspend fun verifyUserOnServer(userId: String): Result<Boolean> {
+        return try {
+            val result = userApiService.verifyUser(userId)
+
+            if (result is Result.Success) {
+                Result.Success(result.data)
+            } else if (result is Result.Error){
+                Result.Error(result.exception)
+            }else{
+                Result.Error(Exception("Failed to verify user"))
+            }
+        } catch (e: Exception) {
             Result.Error(e)
         }
     }
@@ -116,30 +102,6 @@ class UserRepositoryImpl @Inject constructor(
             } else {
                 Result.Error(Exception("User not found"))
             }
-        }
-    }
-
-    private suspend fun connectAndWait(timeoutMs: Long = 10000): Result<Unit> {
-        return try {
-            if (!webSocketClient.isConnected()) {
-                Log.d("UserRepository", "WebSocket not connected, connecting...")
-                webSocketClient.connect()
-            }
-
-            val startTime = System.currentTimeMillis()
-            while (!webSocketClient.isConnected()) {
-                if (System.currentTimeMillis() - startTime > timeoutMs) {
-                    Log.e("UserRepository", "Timeout waiting for WebSocket connection")
-                    return Result.Error(Exception("WebSocket failed to connect in time"))
-                }
-                kotlinx.coroutines.delay(100)
-            }
-
-            Log.d("UserRepository", "WebSocket connection confirmed")
-            Result.Success(Unit)
-        } catch (e: Exception) {
-            Log.e("UserRepository", "Connection error", e)
-            Result.Error(e)
         }
     }
 }

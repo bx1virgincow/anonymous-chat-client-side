@@ -12,7 +12,10 @@ interface UserRepository{
      * Request user identity from server
      * Server will either return existing user or create new one
      */
-    suspend fun requestUserIdentityFromServer(): Result<User>
+    suspend fun registerUser(): Result<User>
+
+    /** verify if user exists on server */
+    suspend fun verifyUserOnServer(userId: String): Result<Boolean>
 
     /** get the current user's identity from local storage */
     suspend fun getUserIdentity(): Result<User>

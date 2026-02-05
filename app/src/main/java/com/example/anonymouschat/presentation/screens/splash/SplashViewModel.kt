@@ -1,11 +1,11 @@
 package com.example.anonymouschat.presentation.screens.splash
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.anonymouschat.domain.usecase.connection.ConnectWebSocketUseCase
-import com.example.anonymouschat.domain.usecase.user.GenerateUserIdentityUseCase
 import com.example.anonymouschat.domain.usecase.user.GetUserIdentityUseCase
-import com.example.anonymouschat.domain.usecase.user.RequestUserIdentityFromServer
+import com.example.anonymouschat.domain.usecase.user.RegisterUserUseCase
 import com.example.anonymouschat.util.Result
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,9 +23,8 @@ import javax.inject.Inject
 @HiltViewModel
 class SplashViewModel @Inject constructor(
     private val getUserIdentityUseCase: GetUserIdentityUseCase,
-    private val requestUserIdentityFromServer: RequestUserIdentityFromServer,
-    private val generateUserIdentityUseCase: GenerateUserIdentityUseCase,
-    private val connectWebSocketUseCase: ConnectWebSocketUseCase
+    private val connectWebSocketUseCase: ConnectWebSocketUseCase,
+    private val registerUserUseCase: RegisterUserUseCase
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SplashState>(SplashState.Loading)
@@ -38,27 +37,48 @@ class SplashViewModel @Inject constructor(
     /** start app */
     private fun initializeApp() {
         viewModelScope.launch {
-            /** get or create user */
-            val userResult = requestUserIdentityFromServer()
-            val user = when (userResult) {
-                is Result.Success -> userResult.data
+            /** check if user exist */
+            val localResult = getUserIdentityUseCase()
+
+            val user = when (localResult) {
+                is Result.Success -> {
+                    Log.d("SplashViewModel", "Local user found: ${localResult.data.fullShareable}")
+                    localResult.data
+                }
+
                 is Result.Error -> {
-                    _state.value = SplashState.Error(userResult.exception.message ?: "Failed to get user")
-                    return@launch
+                    Log.d("SplashViewModel", "No local user, registering...")
+                    val registerResult = registerUserUseCase()
+
+                    when (registerResult) {
+                        is Result.Success -> registerResult.data
+                        is Result.Error -> {
+                            _state.value = SplashState.Error(
+                                registerResult.exception.message ?: "Failed to register"
+                            )
+                            return@launch
+                        }
+                    }
                 }
             }
 
-
-            /** step 2: connec to websocket */
-            when (connectWebSocketUseCase()) {
+            /** connect to websocket */
+            Log.d("SplashViewModel", "Connecting websocket with userId: ${user.userId}")
+            when (val connectResult =
+                connectWebSocketUseCase(ConnectWebSocketUseCase.Params(user.userId))) {
                 is Result.Success -> {
+                    Log.d("SplashViewModel", "WebSocket connected successfully")
+
                     _state.value = SplashState.Success(user)
                 }
 
                 is Result.Error -> {
-                    /** still navigate user to home even if connection
-                     * fails, connection will retry automatically
-                     */
+                    Log.w(
+                        "SplashViewModel",
+                        "WebSocket connection failed, navigating anyway",
+                        connectResult.exception
+                    )
+
                     _state.value = SplashState.Success(user)
                 }
             }

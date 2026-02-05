@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import okhttp3.*
@@ -14,16 +16,15 @@ import okio.ByteString
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-/** websocket client implementation using OkHttp */
-
 @Singleton
 class WebSocketClientImpl @Inject constructor(
     private val okHttpClient: OkHttpClient
-): WebSocketClient{
+) : WebSocketClient {
 
     private val TAG = "WebSocketClient"
     private var webSocket: WebSocket? = null
     private var sessionId: String? = null
+    private var currentUserId: String? = null
 
     // state
     private val _connectionState = MutableStateFlow<WebSocketState>(WebSocketState.Idle)
@@ -32,19 +33,27 @@ class WebSocketClientImpl @Inject constructor(
     // subscription: destination -> Flow emitter
     private val subscription = ConcurrentHashMap<String, MutableList<suspend (String) -> Unit>>()
 
-    override suspend fun connect() {
-        if(isConnected()){
+    override suspend fun connect(userId: String?) {
+        if (isConnected()) {
             Log.d(TAG, "Already connected")
             return
         }
 
         _connectionState.value = WebSocketState.Connecting
+        currentUserId = userId // Store for later use
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(Constants.WEBSOCKET_URL)
-            .build()
 
-        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener(){
+        // Add userId as HTTP header (will be captured by server's HandshakeInterceptor)
+        if (userId != null) {
+            requestBuilder.addHeader("userId", userId)
+            Log.d(TAG, "Connecting with userId (HTTP header): $userId")
+        }
+
+        val request = requestBuilder.build()
+
+        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "Websocket opened")
@@ -76,6 +85,56 @@ class WebSocketClientImpl @Inject constructor(
         })
     }
 
+    /**
+     * Authenticate user after WebSocket connects
+     * This sends /app/user.connect message to establish session mapping
+     */
+    override suspend fun authenticateUser(userId: String): Result<Boolean> {
+        return try {
+            Log.d(TAG, "Authenticating user: $userId")
+
+            // Wait for STOMP connection
+            if (!isConnected()) {
+                var attempts = 0
+                while (!isConnected() && attempts < 30) {
+                    kotlinx.coroutines.delay(100)
+                    attempts++
+                }
+
+                if (!isConnected()) {
+                    return Result.failure(Exception("WebSocket not connected after 3 seconds"))
+                }
+            }
+
+            // Subscribe to connection response BEFORE sending the message
+            val responseFlow = subscribe(Constants.SUBSCRIBE_CONNECTION)
+
+            // Send connect message
+            val connectPayload = """{"userId":"$userId"}"""
+            send(Constants.USER_CONNECT_DESTINATION, connectPayload)
+            Log.d(TAG, "Sent /app/user.connect with userId: $userId")
+
+            // Wait for response
+            val response = withTimeout(5000) {
+                responseFlow.first()
+            }
+
+            Log.d(TAG, "Authentication response: $response")
+
+            // Check if successful
+            val success = response.contains("\"type\":\"CONNECTED\"")
+
+            if (success) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception("Authentication failed: $response"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Authentication error", e)
+            Result.failure(e)
+        }
+    }
+
     override suspend fun disconnect() {
         webSocket?.let {
             sendDisconnectFrame(it)
@@ -83,26 +142,27 @@ class WebSocketClientImpl @Inject constructor(
         }
         webSocket = null
         sessionId = null
+        currentUserId = null
         subscription.clear()
         _connectionState.value = WebSocketState.Disconnected
     }
 
-    override  fun subscribe(destination: String): Flow<String> = callbackFlow {
+    override fun subscribe(destination: String): Flow<String> = callbackFlow {
         // add subscription
-        val emitter: suspend (String) -> Unit= {message ->
+        val emitter: suspend (String) -> Unit = { message ->
             trySend(message)
         }
 
-        subscription.getOrPut(destination){mutableListOf()}.add(emitter)
+        subscription.getOrPut(destination) { mutableListOf() }.add(emitter)
 
         // send STOMP subscribe frame
-        webSocket?.let { ws->
+        webSocket?.let { ws ->
             val subscribeFrame = buildSubscribeFrame(destination)
             ws.send(subscribeFrame)
             Log.d(TAG, "Subscribed to: $destination")
         }
 
-        awaitClose{
+        awaitClose {
             subscription[destination]?.remove(emitter)
             Log.d(TAG, "Unsubscribed from: $destination")
         }
@@ -122,12 +182,12 @@ class WebSocketClientImpl @Inject constructor(
 
     // ========== STOMP Protocol Implementation ==========
 
-
     private fun sendConnectFrame(ws: WebSocket) {
         val connectFrame = buildString {
             append("CONNECT\n")
             append("accept-version:1.1,1.2\n")
             append("heart-beat:0,0\n")
+            // Note: We don't add userId here anymore - it comes from HTTP header
             append("\n")
             append("\u0000") // NULL character
         }
@@ -137,13 +197,6 @@ class WebSocketClientImpl @Inject constructor(
 
     /**
      * Build STOMP SUBSCRIBE frame
-     *
-     * Format:
-     * SUBSCRIBE
-     * id:sub-0
-     * destination:/user/queue/messages
-     *
-     * ^@
      */
     private fun buildSubscribeFrame(destination: String): String {
         val subscriptionId = "sub-${UUID.randomUUID()}"
@@ -158,14 +211,6 @@ class WebSocketClientImpl @Inject constructor(
 
     /**
      * Build STOMP SEND frame
-     *
-     * Format:
-     * SEND
-     * destination:/app/chat.send
-     * content-type:application/json
-     * content-length:123
-     *
-     * {"message":"hello"}^@
      */
     private fun buildSendFrame(destination: String, body: String): String {
         return buildString {
@@ -194,7 +239,6 @@ class WebSocketClientImpl @Inject constructor(
 
     /**
      * Handle incoming STOMP messages
-     * Parse the frame and route to appropriate subscribers
      */
     private fun handleIncomingMessage(message: String) {
         val lines = message.split("\n")
@@ -207,6 +251,15 @@ class WebSocketClientImpl @Inject constructor(
             "CONNECTED" -> {
                 // Extract session ID if provided
                 sessionId = extractHeader(lines, "session")
+                Log.d(TAG, "STOMP SessionId: $sessionId")
+
+                // Log all headers for debugging
+                lines.forEach { line ->
+                    if (line.contains(":")) {
+                        Log.d(TAG, "CONNECTED Header: $line")
+                    }
+                }
+
                 _connectionState.value = WebSocketState.Connected
                 Log.d(TAG, "STOMP CONNECTED, session: $sessionId")
             }
@@ -215,6 +268,8 @@ class WebSocketClientImpl @Inject constructor(
                 // Extract destination and body
                 val destination = extractHeader(lines, "destination")
                 val body = extractBody(message)
+
+                Log.d(TAG, "MESSAGE to $destination: ${body.take(100)}...")
 
                 // Route to subscribers
                 destination?.let { dest ->
@@ -245,14 +300,12 @@ class WebSocketClientImpl @Inject constructor(
 
     /**
      * Extract body from STOMP frame
-     * Body comes after empty line, before NULL character
      */
     private fun extractBody(message: String): String {
         val bodyStart = message.indexOf("\n\n")
         if (bodyStart == -1) return ""
 
         val body = message.substring(bodyStart + 2)
-        // Remove NULL character
         return body.replace("\u0000", "").trim()
     }
 }
